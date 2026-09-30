@@ -1,0 +1,164 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: openshell
+title: OpenShell
+adopt-info: openshell
+summary: Safe, sandboxed runtimes for autonomous AI agents
+description: |
+  OpenShell provides safe, sandboxed runtimes for autonomous AI agents.
+  It offers a CLI for managing gateways, sandboxes, and providers with
+  policy-enforced egress routing, credential proxying, and privacy-aware
+  profile-backed model-provider access.
+
+  The OpenShell snap ships a CLI (`openshell`), a terminal UI
+  (`openshell.term`), and a managed gateway daemon (`openshell.gateway`).
+
+  **Setup instructions**
+
+    1. Install and start Docker using your preferred package source before
+       installing the OpenShell snap. Use a system package or Docker's package
+       repository. The Docker snap is not currently compatible with OpenShell.
+
+       Snap Store installations automatically connect the required interfaces.
+
+       If the OpenShell snap was installed before Docker was running, it may
+       have hit the systemd start limit when trying to repeatedly start and
+       connect to docker. If this is the case, it can be resolved by doing:
+
+         sudo systemctl reset-failed snap.openshell.gateway.service
+         sudo snap restart openshell.gateway
+
+    2. Give your user the gateway client certificate and register the gateway.
+       The gateway requires mTLS; only users holding this certificate can use
+       it, so copy it only for trusted users:
+
+         snap services openshell.gateway
+         d=~/snap/openshell/common/.local/state/openshell/tls
+         mkdir -p -m 700 "$d" "$d/client"
+         sudo install -o "$USER" -m 600 /var/snap/openshell/common/tls/ca.crt "$d/"
+         sudo install -o "$USER" -m 600 -t "$d/client" \
+           /var/snap/openshell/common/tls/client/tls.crt /var/snap/openshell/common/tls/client/tls.key
+         openshell gateway add https://127.0.0.1:17670 --local --name openshell
+         openshell status
+
+base: core24
+grade: stable
+confinement: strict
+# The system :docker slot was added in snapd 2.76, so this is the minimum
+# required version. Snapd 2.77 allowed manual connection to that slot without
+# snap-declaration overrides from the store, such as when installing a locally-
+# built snap, but that is not required for installations from the snap store.
+assumes: [snapd2.76]
+license: Apache-2.0
+website: https://docs.nvidia.com/openshell/latest/index.html
+source-code: https://github.com/NVIDIA/OpenShell
+issues: https://github.com/NVIDIA/OpenShell/issues
+contact: https://github.com/NVIDIA/OpenShell/security/policy
+platforms:
+  amd64:
+    build-on: [amd64]
+    build-for: [amd64]
+  arm64:
+    build-on: [arm64]
+    build-for: [arm64]
+
+apps:
+  openshell:
+    command: bin/openshell
+    environment:
+      XDG_CONFIG_HOME: "$SNAP_USER_COMMON/.config"
+      XDG_DATA_HOME: "$SNAP_USER_COMMON/.local/share"
+      XDG_STATE_HOME: "$SNAP_USER_COMMON/.local/state"
+    plugs:
+      - home
+      - network
+      - system-observe
+  term:
+    command: bin/openshell term
+    desktop: meta/gui/term.desktop
+    environment:
+      XDG_CONFIG_HOME: "$SNAP_USER_COMMON/.config"
+      XDG_DATA_HOME: "$SNAP_USER_COMMON/.local/share"
+      XDG_STATE_HOME: "$SNAP_USER_COMMON/.local/state"
+    plugs:
+      - home
+      - network
+      - system-observe
+  gateway:
+    command: bin/openshell-gateway-wrapper
+    daemon: simple
+    # Refresh must activate the migrated mTLS config immediately. This
+    # interrupts active sandbox sessions.
+    refresh-mode: restart
+    # Snapd runs this daemon as root. The wrapper serves TLS from the bundle
+    # generated in $SNAP_COMMON/tls, and the default config requires client
+    # certificates; the installer copies the client bundle to the target
+    # user. The wrapper uses $SNAP_COMMON/gateway.db. Before startup it
+    # bootstraps package-managed credentials and validates the selected
+    # operator-provided config without creating or rewriting it. A nonempty
+    # OPENSHELL_GATEWAY_CONFIG takes precedence over gateway.toml.
+    environment:
+      XDG_DATA_HOME: "$SNAP_COMMON"
+      XDG_RUNTIME_DIR: "$SNAP_COMMON"
+    plugs:
+      - docker
+      - log-observe
+      - network
+      - network-bind
+      - system-observe
+
+parts:
+  openshell:
+    plugin: nil
+    source: ./snap/prebuilt
+    override-pull: |
+      craftctl default
+      craftctl set version="$(cat "$CRAFT_PART_SRC/version")"
+    override-build: |
+      set -euo pipefail
+
+      MISSING=()
+      for bin in openshell openshell-gateway openshell-sandbox openshell-gateway-wrapper; do
+        if [ ! -f "$CRAFT_PART_SRC/$bin" ]; then
+          MISSING+=("$bin")
+        fi
+      done
+
+      if [ ${#MISSING[@]} -gt 0 ]; then
+        printf '%s\n' \
+          "ERROR: snap/prebuilt/ is incomplete:" \
+          "${MISSING[@]/#/'  - '}" \
+          "" \
+          "The snap build directory must be populated by CI before snapcraft pack." \
+          >&2
+        exit 1
+      fi
+
+      install -D -m 0755 "$CRAFT_PART_SRC/openshell" \
+        "$CRAFT_PART_INSTALL/bin/openshell"
+      install -D -m 0755 "$CRAFT_PART_SRC/openshell-gateway" \
+        "$CRAFT_PART_INSTALL/bin/openshell-gateway"
+      install -D -m 0755 "$CRAFT_PART_SRC/openshell-sandbox" \
+        "$CRAFT_PART_INSTALL/bin/openshell-sandbox"
+      install -D -m 0755 "$CRAFT_PART_SRC/openshell-gateway-wrapper" \
+        "$CRAFT_PART_INSTALL/bin/openshell-gateway-wrapper"
+      install -D -m 0644 "$CRAFT_PART_SRC/meta/gui/term.desktop" \
+        "$CRAFT_PART_INSTALL/meta/gui/term.desktop"
+      install -D -m 0644 "$CRAFT_PART_SRC/meta/gui/icon.png" \
+        "$CRAFT_PART_INSTALL/meta/gui/icon.png"
+      install -D -m 0644 "$CRAFT_PART_SRC/LICENSE" \
+        "$CRAFT_PART_INSTALL/usr/share/doc/openshell/LICENSE"
+      install -D -m 0644 "$CRAFT_PART_SRC/README.md" \
+        "$CRAFT_PART_INSTALL/usr/share/doc/openshell/README.md"
+
+  ssh:
+    # Vendor the openssh-client `ssh` binary into the snap so the CLI/TUI
+    # can spawn `ssh` for sandbox connect/exec/forward without relying on
+    # the host's ssh-keys interface. The binary lands at
+    # $SNAP/usr/bin/ssh and is found via the snap runtime PATH.
+    plugin: nil
+    stage-packages:
+      - openssh-client
+    prime:
+      - usr/bin/ssh
